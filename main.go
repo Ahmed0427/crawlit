@@ -1,15 +1,30 @@
 package main
 
 import (
-	"net/url"
-	"net/http"
-	"strings"
 	"fmt"
-	"os"
 	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
 
 	"golang.org/x/net/html"
 )
+
+type config struct {
+	pages       map[string]int
+	baseURL     string
+	mutex       *sync.Mutex
+	controlChan chan struct{}
+	waitGroup   *sync.WaitGroup
+}
+
+func isValidAbsoluteURL(rawURL string) bool {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil { return false }
+	return parsedURL.IsAbs()
+}
 
 func normalizeURL(inputURL string) (string, error) {
 	parsedURL, err := url.Parse(inputURL)
@@ -26,19 +41,21 @@ func normalizeURL(inputURL string) (string, error) {
 }
 
 func getURLsFromHTML(htmlStr, rawBaseURL string) ([]string, error) {
-	var hrefs []string 
+	var hrefs []string
 
 	var getAnchorsHrefs func(*html.Node)
 	getAnchorsHrefs = func(node *html.Node) {
-		if node.Data == "a" {
+		if node.Type == html.ElementNode && node.Data == "a" {
 			for _, attr := range node.Attr {
-				if attr.Key != "href" { continue }
-				hrefs = append(hrefs, attr.Val) 
+				if attr.Key != "href" {
+					continue
+				}
+				hrefs = append(hrefs, attr.Val)
 			}
 		}
 
 		for c := node.FirstChild; c != nil; c = c.NextSibling {
-			getAnchorsHrefs(c) 
+			getAnchorsHrefs(c)
 		}
 	}
 
@@ -95,15 +112,25 @@ func getHTML(rawURL string) (string, error) {
 	return string(body), nil
 }
 
-func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
+func (cfg *config) addPageVisit(normalizedURL string) (isFirst bool) {
+	cfg.mutex.Lock()
+	defer cfg.mutex.Unlock()
+	cfg.pages[normalizedURL]++
+	if cfg.pages[normalizedURL] >= 2 {
+		return false
+	}
+	return true
+}
+
+func (cfg *config) crawlPage(rawCurrentURL string) {
+	defer cfg.waitGroup.Done()
 	normalizedURL, err := normalizeURL(rawCurrentURL)
 	if err != nil {
 		fmt.Printf("func normalizeURL error: %v\n", err)
 		return
 	}
 
-	pages[normalizedURL]++
-	if pages[normalizedURL] >= 2 {
+	if !cfg.addPageVisit(normalizedURL) {
 		return
 	}
 
@@ -113,7 +140,7 @@ func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
 		return
 	}
 
-	URLs, err := getURLsFromHTML(htmlStr, rawBaseURL)
+	URLs, err := getURLsFromHTML(htmlStr, cfg.baseURL)
 	if err != nil {
 		fmt.Printf("func getURLsFromHTML error: %v\n", err)
 		return
@@ -121,25 +148,49 @@ func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
 
 	fmt.Println(rawCurrentURL)
 	for _, URL := range URLs {
-		if strings.HasPrefix(URL, rawBaseURL) {
-			crawlPage(rawBaseURL, URL, pages)
+		if strings.HasPrefix(URL, cfg.baseURL) {
+			cfg.waitGroup.Add(1)
+
+			select {
+			case cfg.controlChan <- struct{}{}:
+				go func(urlToCrawl string) {
+					cfg.crawlPage(urlToCrawl)
+					<-cfg.controlChan 
+				}(URL)
+			default:
+				cfg.crawlPage(URL)
+				continue
+			}
 		}
 	}
 }
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Println("Usage: %s <URL>", os.Args[0])
+		fmt.Printf("Usage: %s <URL>\n", os.Args[0])
 		os.Exit(1)
 	}
-	baseURL := os.Args[1]	
+	baseURL := os.Args[1]
+	if !isValidAbsoluteURL(baseURL) {
+		fmt.Printf("'%s' is not a valid URL\n", os.Args[1])
+		os.Exit(1)
+	}
 	fmt.Println("Starting web crawl at:", baseURL)
 
-	pages := make(map[string]int)
-	crawlPage(baseURL, baseURL, pages)
-	
-	fmt.Println("\n=========================================")
-	for key, val := range pages {
+	cfg := &config{
+		pages:       make(map[string]int),
+		baseURL:     baseURL,
+		mutex:       &sync.Mutex{},
+		controlChan: make(chan struct{}, 10),
+		waitGroup:   &sync.WaitGroup{},
+	}
+
+	cfg.waitGroup.Add(1)
+	cfg.crawlPage(baseURL)
+	cfg.waitGroup.Wait()
+
+	fmt.Println("\nPages with visit count:")
+	for key, val := range cfg.pages {
 		fmt.Printf("%s: %d\n", key, val)
-	}		
+	}
 }
