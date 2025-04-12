@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
-	"os"
+	"net/http"
 	"strings"
+	"strconv"
 	"sync"
+	"os"
+	"io"
 
 	"golang.org/x/net/html"
 )
@@ -18,6 +19,7 @@ type config struct {
 	mutex       *sync.Mutex
 	controlChan chan struct{}
 	waitGroup   *sync.WaitGroup
+	maxPages    int
 }
 
 func isValidAbsoluteURL(rawURL string) bool {
@@ -122,8 +124,19 @@ func (cfg *config) addPageVisit(normalizedURL string) (isFirst bool) {
 	return true
 }
 
+func (cfg *config) isMaxPages() (isFirst bool) {
+	cfg.mutex.Lock()
+	defer cfg.mutex.Unlock()
+	return len(cfg.pages) >= cfg.maxPages
+}
+
 func (cfg *config) crawlPage(rawCurrentURL string) {
 	defer cfg.waitGroup.Done()
+	
+	if cfg.isMaxPages() {
+		return
+	}
+
 	normalizedURL, err := normalizeURL(rawCurrentURL)
 	if err != nil {
 		fmt.Printf("func normalizeURL error: %v\n", err)
@@ -166,23 +179,36 @@ func (cfg *config) crawlPage(rawCurrentURL string) {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Printf("Usage: %s <URL>\n", os.Args[0])
+	if len(os.Args) != 4 {
+		fmt.Printf("Usage: %s <URL> <MAX_PAGES> <MAX_CHANELS>\n", os.Args[0])
 		os.Exit(1)
 	}
+
 	baseURL := os.Args[1]
 	if !isValidAbsoluteURL(baseURL) {
 		fmt.Printf("'%s' is not a valid URL\n", os.Args[1])
 		os.Exit(1)
 	}
+
+	maxPages, err := strconv.Atoi(os.Args[2])
+	if err != nil {
+		fmt.Printf("MAX_PAGES expects a number\n")
+	}
+
+	maxChans, err := strconv.Atoi(os.Args[3])
+	if err != nil {
+		fmt.Printf("MAX_CHANELS expects a number\n")
+	}
+
 	fmt.Println("Starting web crawl at:", baseURL)
 
 	cfg := &config{
 		pages:       make(map[string]int),
 		baseURL:     baseURL,
 		mutex:       &sync.Mutex{},
-		controlChan: make(chan struct{}, 10),
+		controlChan: make(chan struct{}, maxChans),
 		waitGroup:   &sync.WaitGroup{},
+		maxPages:    maxPages,
 	}
 
 	cfg.waitGroup.Add(1)

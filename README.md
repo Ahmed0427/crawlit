@@ -5,6 +5,6 @@ website on the internet by crawling each page of the site.
 
 ### Quickstrat
 ```console
-go build
-./crawlit <URL>
+go build 
+./crawlit <URL> <MAX_PAGES> <MAX_CHANELS>
 ```
