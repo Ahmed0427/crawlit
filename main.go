@@ -6,12 +6,18 @@ import (
 	"net/http"
 	"strings"
 	"strconv"
+	"sort"
 	"sync"
 	"os"
 	"io"
 
 	"golang.org/x/net/html"
 )
+
+type page struct {
+	url string
+	visits int
+}
 
 type config struct {
 	pages       map[string]int
@@ -178,6 +184,26 @@ func (cfg *config) crawlPage(rawCurrentURL string) {
 	}
 }
 
+func printReport(pagesMap map[string]int, baseURL string) {
+	var pages []page
+	for key, val := range pagesMap {
+		pages = append(pages, page{url: key, visits: val})
+	}
+
+	sort.Slice(pages, func(i, j int) bool {
+		return pages[i].visits > pages[j].visits
+	})
+
+	fmt.Println("\n")
+	fmt.Println("=============================")
+	fmt.Printf("REPORT for: %s\n", baseURL)
+	fmt.Println("=============================")
+	for _, page := range pages {
+		fmt.Printf("Found '%04d' internal links to: %s\n",
+			page.visits, page.url)
+	}
+}
+
 func main() {
 	if len(os.Args) != 4 {
 		fmt.Printf("Usage: %s <URL> <MAX_PAGES> <MAX_CHANELS>\n", os.Args[0])
@@ -215,8 +241,5 @@ func main() {
 	cfg.crawlPage(baseURL)
 	cfg.waitGroup.Wait()
 
-	fmt.Println("\nPages with visit count:")
-	for key, val := range cfg.pages {
-		fmt.Printf("%s: %d\n", key, val)
-	}
+	printReport(cfg.pages, cfg.baseURL)
 }
